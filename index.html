@@ -80,6 +80,34 @@
   .header-btn:active { transform: scale(0.93); background: var(--green-mid); }
   .header-btn svg { width: 16px; height: 16px; stroke: white; fill: none; stroke-width: 2.2; stroke-linecap: round; }
 
+  .week-nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 20px 0;
+    gap: 8px;
+  }
+  .week-nav-btn {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    border: 1px solid var(--border-mid);
+    background: var(--cream);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; flex-shrink: 0;
+    transition: all 0.15s;
+  }
+  .week-nav-btn:active { background: var(--green-pale); border-color: var(--green); }
+  .week-nav-btn svg { width: 14px; height: 14px; stroke: var(--green); fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .week-nav-label {
+    flex: 1; text-align: center;
+    font-size: 13px; font-weight: 500; color: var(--text-mid);
+  }
+  .week-nav-label.current { color: var(--green); }
+  .week-now-badge {
+    font-size: 10px; font-weight: 500;
+    background: var(--green-pale); color: var(--green);
+    padding: 2px 8px; border-radius: 99px;
+    display: inline-block; margin-top: 2px;
+  }
+
   /* ── BOTTOM NAV ── */
   .bottom-nav {
     position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
@@ -464,6 +492,18 @@
       <svg viewBox="0 0 16 16"><line x1="8" y1="2" x2="8" y2="14"/><line x1="2" y1="8" x2="14" y2="8"/></svg>
     </button>
   </div>
+  <div class="week-nav">
+    <button class="week-nav-btn" onclick="changeWeek(-1)">
+      <svg viewBox="0 0 14 14"><polyline points="9,2 4,7 9,12"/></svg>
+    </button>
+    <div style="text-align:center;">
+      <div class="week-nav-label" id="week-nav-label">Diese Woche</div>
+      <div id="week-now-badge" class="week-now-badge">Aktuelle Woche</div>
+    </div>
+    <button class="week-nav-btn" onclick="changeWeek(1)">
+      <svg viewBox="0 0 14 14"><polyline points="5,2 10,7 5,12"/></svg>
+    </button>
+  </div>
   <div class="week-tabs" id="meal-tabs">
     <button class="week-tab active" onclick="setMealType('abendessen',this)">Abendessen</button>
     <button class="week-tab" onclick="setMealType('mittag',this)">Mittagessen</button>
@@ -648,17 +688,47 @@
 // STATE
 // ═══════════════════════════════════════
 let recipes = [];
-let plan = {}; // { "montag-abendessen": { recipeId, name, photo, emoji } }
+let plan = {};
 let groceryItems = [];
 let currentMealType = 'abendessen';
 let editingRecipeId = null;
 let currentPhotoData = null;
 let firebaseReady = false;
 let db = null;
+let currentWeekOffset = 0;
 
 const DAYS = ['Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag','Sonntag'];
 const DAY_KEYS = ['montag','dienstag','mittwoch','donnerstag','freitag','samstag','sonntag'];
 const EMOJIS = ['🍝','🍜','🍛','🐟','🍕','🥗','🍲','🥘','🍱','🌮','🥩','🍗'];
+
+function getWeekKey(offset) {
+  const now = new Date();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - ((now.getDay()+6)%7) + offset*7);
+  const year = monday.getFullYear();
+  const startOfYear = new Date(year, 0, 1);
+  const weekNo = Math.ceil(((monday - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7);
+  return year + '-W' + String(weekNo).padStart(2,'0');
+}
+
+function getWeekDates(offset) {
+  const now = new Date();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - ((now.getDay()+6)%7) + offset*7);
+  const sunday = new Date(monday); sunday.setDate(monday.getDate()+6);
+  const fmt = d => d.toLocaleDateString('de-DE',{day:'numeric',month:'short'});
+  return fmt(monday) + ' – ' + fmt(sunday);
+}
+
+function changeWeek(dir) {
+  currentWeekOffset += dir;
+  updateWeekLabel();
+  renderPlan();
+}
+
+function planKey(dayKey, mealType) {
+  return getWeekKey(currentWeekOffset) + '-' + dayKey + '-' + mealType;
+}
 
 // ═══════════════════════════════════════
 // INIT
@@ -673,12 +743,31 @@ function init() {
 }
 
 function updateWeekLabel() {
-  const now = new Date();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - ((now.getDay()+6)%7));
-  const sunday = new Date(monday); sunday.setDate(monday.getDate()+6);
-  const fmt = d => d.toLocaleDateString('de-DE',{day:'numeric',month:'short'});
-  document.getElementById('week-label').textContent = fmt(monday) + ' – ' + fmt(sunday);
+  const dates = getWeekDates(currentWeekOffset);
+  document.getElementById('week-label').textContent = dates;
+  const navLabel = document.getElementById('week-nav-label');
+  const badge = document.getElementById('week-now-badge');
+  if(currentWeekOffset === 0) {
+    navLabel.textContent = 'Diese Woche';
+    navLabel.className = 'week-nav-label current';
+    badge.style.display = 'inline-block';
+  } else if(currentWeekOffset === -1) {
+    navLabel.textContent = 'Letzte Woche';
+    navLabel.className = 'week-nav-label';
+    badge.style.display = 'none';
+  } else if(currentWeekOffset === 1) {
+    navLabel.textContent = 'Nächste Woche';
+    navLabel.className = 'week-nav-label';
+    badge.style.display = 'none';
+  } else if(currentWeekOffset < 0) {
+    navLabel.textContent = 'Vor ' + Math.abs(currentWeekOffset) + ' Wochen';
+    navLabel.className = 'week-nav-label';
+    badge.style.display = 'none';
+  } else {
+    navLabel.textContent = 'In ' + currentWeekOffset + ' Wochen';
+    navLabel.className = 'week-nav-label';
+    badge.style.display = 'none';
+  }
 }
 
 // ═══════════════════════════════════════
@@ -818,7 +907,7 @@ function renderPlan() {
   const grid = document.getElementById('plan-grid');
   grid.innerHTML = '';
   DAYS.forEach((day, i) => {
-    const key = DAY_KEYS[i] + '-' + currentMealType;
+    const key = planKey(DAY_KEYS[i], currentMealType);
     const entry = plan[key];
     const card = document.createElement('div');
     card.className = 'day-card';
@@ -899,7 +988,7 @@ function savePlanEntry() {
   if(!recipeId) { showToast('Bitte ein Rezept auswählen.'); return; }
   const recipe = recipes.find(r => r.id === recipeId);
   if(!recipe) return;
-  const key = DAY_KEYS[dayIdx] + '-' + meal;
+  const key = planKey(DAY_KEYS[dayIdx], meal);
   plan[key] = { recipeId, name: recipe.name, emoji: recipe.emoji || '🍽' };
   saveLocal();
   fbSavePlan(key, plan[key]);
