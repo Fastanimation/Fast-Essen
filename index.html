@@ -172,6 +172,37 @@
   }
   .day-card:active { transform: scale(0.97); }
 
+  .day-mosaic {
+    width: 100%; height: 90px;
+    display: grid; overflow: hidden;
+  }
+  .day-mosaic.count-1 { grid-template-columns: 1fr; }
+  .day-mosaic.count-2 { grid-template-columns: 1fr 1fr; gap: 1px; }
+  .day-mosaic.count-3 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px; }
+  .day-mosaic.count-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px; }
+  .day-mosaic.count-many { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px; }
+  .day-mosaic .mosaic-cell {
+    overflow: hidden; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--green-pale); font-size: 18px;
+  }
+  .day-mosaic.count-3 .mosaic-cell:first-child { grid-row: span 2; }
+  .day-mosaic .mosaic-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .day-mosaic .mosaic-more {
+    position: absolute; inset: 0;
+    background: rgba(45,106,79,0.55);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 500; color: white;
+  }
+  .day-add-btn {
+    position: absolute; bottom: 4px; right: 4px;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--green); border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 2;
+  }
+  .day-add-btn svg { width: 10px; height: 10px; stroke: white; fill: none; stroke-width: 2.5; stroke-linecap: round; }
+
   .day-photo {
     width: 100%; height: 90px;
     object-fit: cover;
@@ -740,6 +771,23 @@ function init() {
   renderRecipes();
   renderGrocery();
   loadFBConfig();
+  autoConnectFirebase();
+}
+
+function autoConnectFirebase() {
+  try {
+    const cfg = JSON.parse(localStorage.getItem('fk_fbconfig') || '{}');
+    if(!cfg.apiKey || !cfg.projectId || !cfg.appId) return;
+    const script1 = document.createElement('script');
+    script1.src = 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js';
+    script1.onload = () => {
+      const script2 = document.createElement('script');
+      script2.src = 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js';
+      script2.onload = () => initFirebase(cfg.apiKey, cfg.projectId, cfg.appId);
+      document.head.appendChild(script2);
+    };
+    document.head.appendChild(script1);
+  } catch(e) {}
 }
 
 function updateWeekLabel() {
@@ -851,16 +899,27 @@ function initFirebase(apiKey, projectId, appId) {
 
 function syncFromFirebase() {
   if(!db) return;
+  document.getElementById('sync-status-label').textContent = '☁ Synchronisiere…';
   db.collection('recipes').onSnapshot(snap => {
-    recipes = snap.docs.map(d => ({id: d.id, ...d.data()}));
+    if(!snap.empty) {
+      recipes = snap.docs.map(d => ({id: d.id, ...d.data()}));
+    }
     saveLocal();
     renderRecipes();
     renderPlan();
     renderGrocery();
+    document.getElementById('sync-status-label').textContent = '☁ Mit Firebase verbunden';
+  }, err => {
+    document.getElementById('sync-status-label').textContent = 'Verbindungsfehler – lokal gespeichert';
   });
   db.collection('plan').onSnapshot(snap => {
-    plan = {};
-    snap.docs.forEach(d => { plan[d.id] = d.data(); });
+    if(!snap.empty) {
+      plan = {};
+      snap.docs.forEach(d => {
+        const data = d.data();
+        plan[d.id] = data.entries || data;
+      });
+    }
     saveLocal();
     renderPlan();
     renderGrocery();
@@ -869,7 +928,11 @@ function syncFromFirebase() {
 
 function fbSaveRecipe(recipe) {
   if(!db) return;
-  db.collection('recipes').doc(recipe.id).set(recipe).catch(()=>{});
+  db.collection('recipes').doc(recipe.id).set(recipe).catch(e => {
+    if(e.code === 'invalid-argument') {
+      showToast('Foto zu groß für Cloud – lokal gespeichert.');
+    }
+  });
 }
 function fbDeleteRecipe(id) {
   if(!db) return;
@@ -877,8 +940,12 @@ function fbDeleteRecipe(id) {
 }
 function fbSavePlan(key, entry) {
   if(!db) return;
-  if(entry) db.collection('plan').doc(key).set(entry).catch(()=>{});
-  else db.collection('plan').doc(key).delete().catch(()=>{});
+  if(entry) {
+    const data = Array.isArray(entry) ? { entries: entry } : entry;
+    db.collection('plan').doc(key).set(data).catch(()=>{});
+  } else {
+    db.collection('plan').doc(key).delete().catch(()=>{});
+  }
 }
 
 // ═══════════════════════════════════════
@@ -903,30 +970,51 @@ function setMealType(type, btn) {
   renderPlan();
 }
 
+function buildMosaicHtml(entries) {
+  const count = entries.length;
+  const cls = count >= 4 ? 'count-many' : 'count-' + count;
+  const visible = entries.slice(0, 4);
+  const extra = count > 4 ? count - 4 : 0;
+  let cells = visible.map((e, idx) => {
+    const recipe = recipes.find(r => r.id === e.recipeId);
+    const isLast = idx === 3 && extra > 0;
+    let inner = '';
+    if(recipe && recipe.photo) {
+      inner = `<img src="${recipe.photo}" alt="${e.name}">`;
+    } else {
+      inner = `<span style="font-size:${count===1?'28':'18'}px">${e.emoji || '🍽'}</span>`;
+    }
+    const moreOverlay = isLast ? `<div class="mosaic-more">+${extra+1}</div>` : '';
+    return `<div class="mosaic-cell">${inner}${moreOverlay}</div>`;
+  }).join('');
+  return `<div class="day-mosaic ${cls}">${cells}</div>`;
+}
+
 function renderPlan() {
   const grid = document.getElementById('plan-grid');
   grid.innerHTML = '';
   DAYS.forEach((day, i) => {
     const key = planKey(DAY_KEYS[i], currentMealType);
-    const entry = plan[key];
+    let entries = plan[key];
+    if(entries && !Array.isArray(entries)) entries = [entries];
     const card = document.createElement('div');
     card.className = 'day-card';
-    card.onclick = () => entry ? openPlanDetail(key) : openAddToPlanForDay(i);
-    if(entry) {
-      const recipe = recipes.find(r => r.id === entry.recipeId);
-      let photoHtml = '';
-      if(recipe && recipe.photo) {
-        photoHtml = `<img class="day-photo" src="${recipe.photo}" alt="${day}">`;
-      } else {
-        const emoji = entry.emoji || (recipe ? (recipe.emoji || '🍽') : '🍽');
-        photoHtml = `<div class="day-photo-placeholder">${emoji}</div>`;
-      }
+    card.style.position = 'relative';
+    card.onclick = () => (entries && entries.length) ? openPlanDetail(key) : openAddToPlanForDay(i);
+    if(entries && entries.length) {
+      const names = entries.map(e => e.name).join(', ');
       card.innerHTML = `
-        ${photoHtml}
+        ${buildMosaicHtml(entries)}
         <div class="day-info">
           <div class="day-label">${day}</div>
-          <div class="day-name">${entry.name || '—'}</div>
+          <div class="day-name">${names}</div>
         </div>`;
+      const addBtn = document.createElement('button');
+      addBtn.className = 'day-add-btn';
+      addBtn.title = 'Weiteres Gericht hinzufügen';
+      addBtn.innerHTML = `<svg viewBox="0 0 10 10"><line x1="5" y1="1" x2="5" y2="9"/><line x1="1" y1="5" x2="9" y2="5"/></svg>`;
+      addBtn.onclick = (e) => { e.stopPropagation(); openAddToPlanForDay(i); };
+      card.querySelector('.day-mosaic').appendChild(addBtn);
     } else {
       card.innerHTML = `
         <div class="day-photo-empty">
@@ -989,9 +1077,14 @@ function savePlanEntry() {
   const recipe = recipes.find(r => r.id === recipeId);
   if(!recipe) return;
   const key = planKey(DAY_KEYS[dayIdx], meal);
-  plan[key] = { recipeId, name: recipe.name, emoji: recipe.emoji || '🍽' };
+  if(!plan[key]) plan[key] = [];
+  if(!Array.isArray(plan[key])) plan[key] = [plan[key]];
+  if(plan[key].find(e => e.recipeId === recipeId)) {
+    showToast('Bereits eingeplant!'); return;
+  }
+  plan[key].push({ recipeId, name: recipe.name, emoji: recipe.emoji || '🍽' });
   saveLocal();
-  fbSavePlan(key, plan[key]);
+  fbSavePlan(key, { entries: plan[key] });
   renderPlan();
   generateGrocery();
   renderGrocery();
@@ -1000,18 +1093,50 @@ function savePlanEntry() {
 }
 
 function openPlanDetail(key) {
-  const entry = plan[key];
-  if(!entry) return;
-  const recipe = recipes.find(r => r.id === entry.recipeId);
-  if(recipe) { openRecipeDetail(recipe.id); return; }
-  if(confirm('Diesen Eintrag aus dem Plan entfernen?')) {
-    delete plan[key];
-    saveLocal();
-    fbSavePlan(key, null);
-    renderPlan();
-    generateGrocery();
-    renderGrocery();
+  let entries = plan[key];
+  if(!entries) return;
+  if(!Array.isArray(entries)) entries = [entries];
+  if(entries.length === 1) {
+    const recipe = recipes.find(r => r.id === entries[0].recipeId);
+    if(recipe) { openRecipeDetailWithRemove(recipe.id, key, entries[0].recipeId); return; }
   }
+  // Multiple entries – show list sheet
+  const det = document.getElementById('detail-content');
+  let rows = entries.map(e => {
+    const r = recipes.find(x => x.id === e.recipeId);
+    const photo = r && r.photo ? `<img style="width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;" src="${r.photo}">` : `<div style="width:44px;height:44px;border-radius:8px;background:var(--green-pale);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;">${e.emoji||'🍽'}</div>`;
+    return `<div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--border);cursor:pointer;" onclick="openRecipeDetailWithRemove('${e.recipeId}','${key}','${e.recipeId}')">
+      ${photo}
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:14px;font-weight:500;color:var(--text);">${e.name}</div>
+      </div>
+      <button onclick="event.stopPropagation();removePlanEntry('${key}','${e.recipeId}')" style="background:none;border:none;cursor:pointer;color:var(--text-soft);font-size:20px;padding:4px 8px;">×</button>
+    </div>`;
+  }).join('');
+  det.innerHTML = `
+    <div style="padding:20px;">
+      <div style="font-family:'Lora',serif;font-size:20px;font-weight:500;color:var(--green);margin-bottom:16px;">${entries.length} Gerichte</div>
+      ${rows}
+      <button class="btn-secondary" style="margin-top:16px;" onclick="closeOverlay('overlay-detail')">Schließen</button>
+    </div>`;
+  document.getElementById('overlay-detail').classList.add('open');
+}
+
+function removePlanEntry(key, recipeId) {
+  if(!confirm('Gericht aus dem Plan entfernen?')) return;
+  if(!Array.isArray(plan[key])) plan[key] = [plan[key]];
+  plan[key] = plan[key].filter(e => e.recipeId !== recipeId);
+  if(plan[key].length === 0) delete plan[key];
+  saveLocal();
+  fbSavePlan(key, plan[key] ? { entries: plan[key] } : null);
+  closeOverlay('overlay-detail');
+  renderPlan();
+  generateGrocery();
+  renderGrocery();
+}
+
+function openRecipeDetailWithRemove(recipeId, planKey, planRecipeId) {
+  openRecipeDetail(recipeId);
 }
 
 // ═══════════════════════════════════════
@@ -1027,7 +1152,11 @@ function renderRecipes(filter) {
     return;
   }
   visible.forEach(r => {
-    const usedDays = Object.values(plan).filter(e=>e.recipeId===r.id).length;
+    const usedDays = Object.values(plan).filter(e => {
+      if(Array.isArray(e)) return e.some(x=>x.recipeId===r.id);
+      if(e && e.entries) return e.entries.some(x=>x.recipeId===r.id);
+      return e && e.recipeId===r.id;
+    }).length;
     const card = document.createElement('div');
     card.className = 'recipe-card';
     card.onclick = () => openRecipeDetail(r.id);
@@ -1189,18 +1318,24 @@ function openRecipeDetail(id) {
 
 function quickPlanRecipe(id) {
   closeOverlay('overlay-detail');
-  renderDayPicker(0);
-  renderPlanRecipeSelect();
-  document.getElementById('plan-recipe-select').value = id;
-  document.getElementById('plan-meal-select').value = currentMealType;
-  document.getElementById('overlay-plan').classList.add('open');
+  setTimeout(() => {
+    renderDayPicker(0);
+    renderPlanRecipeSelect();
+    document.getElementById('plan-recipe-select').value = id;
+    document.getElementById('plan-meal-select').value = currentMealType;
+    document.getElementById('overlay-plan').classList.add('open');
+  }, 200);
 }
 
 // ═══════════════════════════════════════
 // GROCERY
 // ═══════════════════════════════════════
 function generateGrocery() {
-  const planRecipeIds = [...new Set(Object.values(plan).map(e=>e.recipeId))];
+  const planRecipeIds = [...new Set(Object.values(plan).flatMap(e => {
+    if(Array.isArray(e)) return e.map(x=>x.recipeId);
+    if(e && e.entries) return e.entries.map(x=>x.recipeId);
+    return e ? [e.recipeId] : [];
+  }))];
   const allIngredients = [];
   planRecipeIds.forEach(id => {
     const r = recipes.find(x=>x.id===id);
